@@ -410,9 +410,9 @@ let curUser = null;
 let curProfile = null;
 let allProducts = [];
 let customerPrices = {};  // product_id → {type, discount_pct, fixed_nhan, fixed_giao}
-let cart = [];            // [{product, qty, hinh_thuc}]
+let cart = [];            // [{product, qty}]
 let allOrders = [];
-let curCat = 'all';
+let totalOrderCount = 0;  // tổng số đơn (không giới hạn limit)
 let hinh_thuc = 'nhan';
 
 // ===== INIT =====
@@ -571,13 +571,18 @@ function swTab(t){
 
 // ===== RENDER TRANG CHỦ =====
 async function renderHome(){
-  // Load recent orders
+  // Đếm tổng số đơn (không limit)
+  const { count } = await sb.from('orders')
+    .select('*', {count:'exact', head:true}).eq('customer_id', curUser.id);
+  totalOrderCount = count || 0;
+  document.getElementById('stat-don').textContent = totalOrderCount;
+
+  // Load 3 đơn gần nhất để hiển thị
   const { data:orders } = await sb.from('orders')
     .select('*').eq('customer_id', curUser.id)
     .order('created_at', {ascending:false}).limit(3);
   allOrders = orders || [];
-  document.getElementById('stat-don').textContent = allOrders.length;
-  
+
   const el = document.getElementById('home-recent-orders');
   if(!allOrders.length){
     el.innerHTML = '<div class="empty"><div class="empty-icon">📋</div><p>Chưa có đơn hàng nào</p></div>';
@@ -589,9 +594,10 @@ async function renderHome(){
         <div class="ro-ma">${o.ma_don||'#'+o.id}</div>
         <div>${badgeHtml(o.trang_thai)}</div>
       </div>
-      <div class="ro-date">${fDate(o.created_at)} · ${o.hinh_thuc==='giao'?'Giao tận nơi':'Nhận tại kho'}</div>
+      <div class="ro-date">${fDate(o.created_at)} · ${o.hinh_thuc==='giao'?'🚚 Giao tận nơi':'🏭 Nhận tại kho'}</div>
       <div class="ro-footer">
-        <div class="ro-total">${o.hinh_thuc==='giao'?f(o.tong_giao):f(o.tong_nhan)}</div>
+        <div class="ro-total">${f(o.hinh_thuc==='giao'?o.tong_giao:o.tong_nhan)}</div>
+        <span style="font-size:11px;color:var(--t3)">Xem chi tiết →</span>
       </div>
     </div>
   `).join('');
@@ -752,20 +758,24 @@ function renderCart(){
     `;
   }).join('');
   
-  // Tổng tiền
+  // Tổng tiền + tổng số lượng theo đơn vị
   let totalNhan=0, totalGiao=0;
+  // Gom số lượng theo đơn vị
+  const unitMap = {};
   cart.forEach(c => {
     const gia = getKhachGia(c.product);
     totalNhan += gia.nhan * c.qty;
     totalGiao += gia.giao * c.qty;
+    const u = c.product.don_vi || 'm²';
+    unitMap[u] = (unitMap[u] || 0) + c.qty;
   });
-  
+  const unitSummary = Object.entries(unitMap).map(([u,q]) => `${q} ${u}`).join(' · ');
   const htNhan = hinh_thuc==='nhan';
   
   el.innerHTML = `
     <div class="cart-list">${itemsHtml}</div>
     <div class="cart-summary">
-      <div class="cs-row"><span>${cart.length} sản phẩm</span><span>${cart.reduce((a,c)=>a+c.qty,0)} ${cart[0]?.product.don_vi||'m²'}</span></div>
+      <div class="cs-row"><span>${cart.length} sản phẩm</span><span>${unitSummary}</span></div>
       <div class="cs-total">
         <span>Tổng tiền</span>
         <span id="cart-total">${f(htNhan?totalNhan:totalGiao)}</span>
@@ -916,6 +926,7 @@ async function showOrderDetail(orderId){
   }
   
   const ht = order?.hinh_thuc==='giao';
+  const coTheHuy = order?.trang_thai === 'moi';
   document.getElementById('modal-content').innerHTML = `
     <div style="margin-bottom:12px;padding:10px;background:var(--bg2);border-radius:8px;font-size:12px">
       <div style="display:flex;justify-content:space-between;margin-bottom:4px">
@@ -929,11 +940,15 @@ async function showOrderDetail(orderId){
         <span style="color:var(--t2)">Địa chỉ</span>
         <span style="font-weight:600;text-align:right;max-width:60%">${order.dia_chi_giao}</span>
       </div>`:''}
+      ${order?.ghi_chu?`<div style="display:flex;justify-content:space-between;margin-top:4px">
+        <span style="color:var(--t2)">Ghi chú</span>
+        <span style="font-weight:600;text-align:right;max-width:60%">${order.ghi_chu}</span>
+      </div>`:''}
     </div>
     ${items.map(i => `
       <div class="modal-item">
-        <div class="modal-item-ma">${i.ma_sp}</div>
-        <div class="modal-item-detail">${i.kc||''} · ${i.so_luong} ${i.don_vi||'m²'}</div>
+        <div class="modal-item-ma">${i.ma_sp} <span style="font-weight:400;color:var(--t2);font-size:11px">${i.kc||''}</span></div>
+        <div class="modal-item-detail">${i.so_luong} ${i.don_vi||'m²'} × ${f(ht?i.gia_giao:i.gia_nhan)}</div>
         <div class="modal-item-price">${f(ht?i.thanh_tien_giao:i.thanh_tien_nhan)}</div>
       </div>
     `).join('')}
@@ -941,6 +956,7 @@ async function showOrderDetail(orderId){
       <span>Tổng cộng</span>
       <span>${f(ht?order?.tong_giao:order?.tong_nhan)}</span>
     </div>
+    ${coTheHuy?`<button onclick="huyDon(${orderId})" style="margin-top:12px;width:100%;padding:11px;background:none;border:1.5px solid var(--bd);border-radius:var(--r2);font-size:13px;font-weight:600;cursor:pointer;color:var(--t2);font-family:var(--f)">❌ Hủy đơn hàng này</button>`:''}
   `;
 }
 
@@ -949,6 +965,21 @@ function closeOrderModal(){
 }
 function closeModal(e){
   if(e.target.id==='order-modal') closeOrderModal();
+}
+
+// ===== HỦY ĐƠN =====
+async function huyDon(orderId){
+  if(!confirm('Bạn chắc chắn muốn hủy đơn hàng này?')) return;
+  const { error } = await sb.from('orders')
+    .update({ trang_thai:'huy' })
+    .eq('id', orderId)
+    .eq('customer_id', curUser.id)
+    .eq('trang_thai','moi');
+  if(error){ showToast('❌ Lỗi: '+error.message); return; }
+  showToast('✅ Đã hủy đơn hàng');
+  closeOrderModal();
+  loadOrders();
+  renderHome();
 }
 
 // ===== TOAST =====
