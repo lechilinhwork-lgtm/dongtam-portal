@@ -500,9 +500,10 @@ async function loadProfile(){
   document.getElementById('pf-email').textContent = curProfile.email;
   document.getElementById('pf-ma').textContent = curProfile.ma_kh || '–';
   document.getElementById('pf-nhom').textContent = curProfile.nhom_gia || 'standard';
-  const ck = curProfile.discount_pct || 0;
-  document.getElementById('pf-ck').textContent = ck > 0 ? `-${ck}%` : 'Giá chuẩn';
-  document.getElementById('stat-ck').textContent = ck > 0 ? `-${ck}%` : '0%';
+  const nhan_pct = curProfile.nhan_pct || curProfile.discount_pct || 23;
+  const giao_pct = curProfile.giao_pct || curProfile.discount_pct || 20;
+  document.getElementById('pf-ck').textContent = `Nhận kho: -${nhan_pct}% / Giao: -${giao_pct}%`;
+  document.getElementById('stat-ck').textContent = `-${nhan_pct}%`;
   
   // Load giá riêng nếu có
   const { data:prices } = await sb.from('customer_prices').select('*').eq('customer_id', curUser.id);
@@ -518,24 +519,37 @@ async function loadProducts(){
 // ===== TÍNH GIÁ KHÁCH HÀNG =====
 function getKhachGia(product){
   const cp = customerPrices[product.id];
-  let nhan = product.gia_nhan;
-  let giao = product.gia_giao;
-  
+  const le = product.gia_le || 0;
+
+  // Giá mặc định = tính từ giá lẻ
+  // Nhận kho = gia_le × (1 - nhan_pct/100)
+  // Giao tận nơi = gia_le × (1 - giao_pct/100)
+  const DEFAULT_NHAN_PCT = 23; // giảm 23% so với giá lẻ
+  const DEFAULT_GIAO_PCT = 20; // giảm 20% so với giá lẻ
+
+  let nhan = Math.round(le * (1 - DEFAULT_NHAN_PCT/100));
+  let giao = Math.round(le * (1 - DEFAULT_GIAO_PCT/100));
+
   if(cp){
     if(cp.price_type === 'fixed'){
+      // Giá cố định riêng từng SP
       if(cp.fixed_nhan) nhan = cp.fixed_nhan;
       if(cp.fixed_giao) giao = cp.fixed_giao;
     } else {
-      // discount_pct từ giá riêng HOẶC từ profile chung
-      const pct = cp.discount_pct || 0;
-      nhan = Math.round(nhan * (1 - pct/100));
-      giao = Math.round(giao * (1 - pct/100));
+      // % chiết khấu riêng từng KH (tính trên giá lẻ)
+      const nhan_pct = cp.nhan_pct || cp.discount_pct || DEFAULT_NHAN_PCT;
+      const giao_pct = cp.giao_pct || cp.discount_pct || DEFAULT_GIAO_PCT;
+      nhan = Math.round(le * (1 - nhan_pct/100));
+      giao = Math.round(le * (1 - giao_pct/100));
     }
-  } else if(curProfile && curProfile.discount_pct > 0){
-    const pct = curProfile.discount_pct;
-    nhan = Math.round(nhan * (1 - pct/100));
-    giao = Math.round(giao * (1 - pct/100));
+  } else if(curProfile){
+    // Dùng % chiết khấu từ profile KH
+    const nhan_pct = curProfile.nhan_pct || curProfile.discount_pct || DEFAULT_NHAN_PCT;
+    const giao_pct = curProfile.giao_pct || curProfile.discount_pct || DEFAULT_GIAO_PCT;
+    if(nhan_pct > 0) nhan = Math.round(le * (1 - nhan_pct/100));
+    if(giao_pct > 0) giao = Math.round(le * (1 - giao_pct/100));
   }
+
   return { nhan, giao };
 }
 
